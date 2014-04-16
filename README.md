@@ -11,6 +11,12 @@ abstraction of asynchronous message queues, multiple messaging patterns,
 message filtering (subscriptions), seamless access to multiple transport
 protocols and more.
 
+## Stable Fork
+
+This repository is used for making stable releases. Please do not send
+pull requests here unless they are specifically and only for this fork.
+Rather, send them to libzmq/master. Issues with test cases may be back
+ported to this repository by its maintainers.
 
 ## Building and installation
 

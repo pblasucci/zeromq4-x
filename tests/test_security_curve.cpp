@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2007-2013 Contributors as noted in the AUTHORS file
+    Copyright (c) 2007-2014 Contributors as noted in the AUTHORS file
 
     This file is part of 0MQ.
 
@@ -18,6 +18,17 @@
 */
 
 #include "testutil.hpp"
+#if defined (ZMQ_HAVE_WINDOWS)
+#   include <winsock2.h>
+#   include <ws2tcpip.h>
+#   include <stdexcept>
+#   define close closesocket
+#else
+#   include <sys/socket.h>
+#   include <netinet/in.h>
+#   include <arpa/inet.h>
+#   include <unistd.h>
+#endif
 
 //  We'll generate random test keys at startup
 static char client_public [41];
@@ -26,9 +37,8 @@ static char server_public [41];
 static char server_secret [41];
 
 //  --------------------------------------------------------------------------
-//  Encode a binary frame as a string; destination string MUST be at least
-//  size * 5 / 4 bytes long plus 1 byte for the null terminator. Returns
-//  dest. Size must be a multiple of 4.
+//  This methods receives and validates ZAP requestes (allowing or denying
+//  each client connection).
 
 static void zap_handler (void *handler)
 {
@@ -198,6 +208,65 @@ int main (void)
     assert (rc == 0);
     expect_bounce_fail (server, client);
     close_zero_linger (client);
+
+    //  Check CURVE security with NULL client credentials
+    //  This must be caught by the curve_server class, not passed to ZAP
+    client = zmq_socket (ctx, ZMQ_DEALER);
+    assert (client);
+    rc = zmq_connect (client, "tcp://localhost:9998");
+    assert (rc == 0);
+    expect_bounce_fail (server, client);
+    close_zero_linger (client);
+
+    //  Check CURVE security with PLAIN client credentials
+    //  This must be caught by the curve_server class, not passed to ZAP
+    client = zmq_socket (ctx, ZMQ_DEALER);
+    assert (client);
+    rc = zmq_setsockopt (client, ZMQ_PLAIN_USERNAME, "admin", 5);
+    assert (rc == 0);
+    rc = zmq_setsockopt (client, ZMQ_PLAIN_PASSWORD, "password", 8);
+    assert (rc == 0);
+    expect_bounce_fail (server, client);
+    close_zero_linger (client);
+
+    // Unauthenticated messages from a vanilla socket shouldn't be received
+    struct sockaddr_in ip4addr;
+    int s;
+
+    ip4addr.sin_family = AF_INET;
+    ip4addr.sin_port = htons (9998);
+    inet_pton (AF_INET, "127.0.0.1", &ip4addr.sin_addr);
+
+    s = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    rc = connect (s, (struct sockaddr*) &ip4addr, sizeof (ip4addr));
+    assert (rc > -1);
+    // send anonymous ZMTP/1.0 greeting
+    send (s, "\x01\x00", 2, 0);
+    // send sneaky message that shouldn't be received
+    send (s, "\x08\x00sneaky\0", 9, 0);
+    int timeout = 150;
+    zmq_setsockopt (server, ZMQ_RCVTIMEO, &timeout, sizeof (timeout));
+    char *buf = s_recv (server);
+    if (buf != NULL) {
+        printf ("Received unauthenticated message: %s\n", buf);
+        assert (buf == NULL);
+    }
+    close (s);
+
+    //  Check return codes for invalid buffer sizes
+    client = zmq_socket (ctx, ZMQ_DEALER);
+    assert (client);
+    errno = 0;
+    rc = zmq_setsockopt (client, ZMQ_CURVE_SERVERKEY, server_public, 123);
+    assert (rc == -1 && errno == EINVAL);
+    errno = 0;
+    rc = zmq_setsockopt (client, ZMQ_CURVE_PUBLICKEY, client_public, 123);
+    assert (rc == -1 && errno == EINVAL);
+    errno = 0;
+    rc = zmq_setsockopt (client, ZMQ_CURVE_SECRETKEY, client_secret, 123);
+    assert (rc == -1 && errno == EINVAL);
+    rc = zmq_close (client);
+    assert (rc == 0);
 
     //  Shutdown
     rc = zmq_close (server);
